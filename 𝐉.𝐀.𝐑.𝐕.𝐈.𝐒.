@@ -1,0 +1,194 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+-- 설정
+local TOGGLE_KEY = Enum.KeyCode.Zero -- 0번 키로 Silent Aim ON/OFF
+local MENU_KEY = Enum.KeyCode.Nine   -- 9번 키로 예외 플레이어 관리 UI 켜기/끄기
+local MAX_DISTANCE = 500              -- 최대 감지 거리 (Studs)
+
+local isEnabled = false
+local whitelist = {} -- 예외 처리된 플레이어 이름(UserId 또는 Name)을 저장할 테이블
+
+-- 알림 표시 함수
+local function notify(title, text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = 1.5
+        })
+    end)
+end
+
+-- ==========================================
+-- UI 생성 및 관리 (9번 키)
+-- ==========================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "WhitelistManagerGui"
+screenGui.ResetOnSpawn = false
+-- Executor 환경에 따라 CoreGui 또는 PlayerGui 사용
+pcall(function()
+    screenGui.Parent = CoreGui
+end)
+if not screenGui.Parent then
+    screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 220, 0, 300)
+mainFrame.Position = UDim2.new(0.05, 0, 0.3, 0)
+mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+mainFrame.BorderSizePixel = 0
+mainFrame.Visible = false
+mainFrame.Parent = screenGui
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, 0, 0, 35)
+titleLabel.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.Text = "에임 예외 대상 설정 (9번)"
+titleLabel.TextSize = 14
+titleLabel.Font = Enum.Font.SourceSansBold
+titleLabel.Parent = mainFrame
+
+local scrollingFrame = Instance.new("ScrollingFrame")
+scrollingFrame.Size = UDim2.new(1, -10, 1, -45)
+scrollingFrame.Position = UDim2.new(0, 5, 0, 40)
+scrollingFrame.BackgroundTransparency = 1
+scrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+scrollingFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scrollingFrame.Parent = mainFrame
+
+local uiListLayout = Instance.new("UIListLayout")
+uiListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+uiListLayout.Padding = UDim.new(0, 5)
+uiListLayout.Parent = scrollingFrame
+
+-- 플레이어 목록 버튼 리프레시 함수
+local function refreshPlayerList()
+    -- 기존 버튼들 제거
+    for _, child in pairs(scrollingFrame:GetChildren()) do
+        if child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+
+    -- 현재 서버의 모든 플레이어 순회
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1, -10, 0, 30)
+            btn.BackgroundColor3 = whitelist[player.Name] and Color3.fromRGB(150, 50, 50) or Color3.fromRGB(50, 150, 50)
+            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            btn.Text = player.DisplayName .. " (@" .. player.Name .. ")"
+            btn.TextSize = 12
+            btn.Font = Enum.Font.SourceSans
+            btn.Parent = scrollingFrame
+
+            -- 버튼 클릭 시 화이트리스트 토글
+            btn.MouseButton1Click:Connect(function()
+                if whitelist[player.Name] then
+                    whitelist[player.Name] = nil
+                    btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+                    notify("예외 해제", player.Name .. "님이 에임 대상에 포함됩니다.")
+                else
+                    whitelist[player.Name] = true
+                    btn.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+                    notify("예외 등록", player.Name .. "님이 에임 대상에서 제외됩니다.")
+                end
+            end)
+        end
+    end
+end
+
+-- 플레이어가 나갔거나 들어올 때 리스트 갱신
+Players.PlayerAdded:Connect(refreshPlayerList)
+Players.PlayerRemoving:Connect(refreshPlayerList)
+
+-- ==========================================
+-- 타겟 탐색 및 화이트리스트 적용
+-- ==========================================
+local function getClosestPlayerHead()
+    local myChar = LocalPlayer.Character
+    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then
+        return nil
+    end
+
+    local myPos = myChar.HumanoidRootPart.Position
+    local closestHead = nil
+    local shortestDist = MAX_DISTANCE
+
+    for _, player in pairs(Players:GetPlayers()) do
+        -- 예외 목록(whitelist)에 있는 플레이어는 건너뜀
+        if player ~= LocalPlayer and not whitelist[player.Name] and player.Character then
+            local char = player.Character
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local head = char:FindFirstChild("Head")
+
+            if hum and hum.Health > 0 and head then
+                local dist = (head.Position - myPos).Magnitude
+                if dist < shortestDist then
+                    shortestDist = dist
+                    closestHead = head
+                end
+            end
+        end
+    end
+
+    return closestHead
+end
+
+-- ==========================================
+-- 키 입력 이벤트 처리
+-- ==========================================
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    -- 0번 키: Silent Aim ON/OFF
+    if input.KeyCode == TOGGLE_KEY then
+        isEnabled = not isEnabled
+        if isEnabled then
+            notify("Silent Aim", "판정 고정 기능 [ ON ]")
+        else
+            notify("Silent Aim", "판정 고정 기능 [ OFF ]")
+        end
+        
+    -- 9번 키: 예외 관리창 표시/숨기기
+    elseif input.KeyCode == MENU_KEY then
+        mainFrame.Visible = not mainFrame.Visible
+        if mainFrame.Visible then
+            refreshPlayerList()
+            notify("플레이어 목록", "예외 설정창이 열렸습니다.")
+        end
+    end
+end)
+
+-- ==========================================
+-- Metatable Hooking (Mouse.Hit / Target 변조)
+-- ==========================================
+local rawMetatable = getrawmetatable and getrawmetatable(game) or setmetatable({}, {__index = game})
+if setreadonly then setreadonly(rawMetatable, false) end
+
+local oldIndex = rawMetatable.__index
+
+rawMetatable.__index = newcclosure(function(self, index)
+    if isEnabled and self == Mouse then
+        local targetHead = getClosestPlayerHead()
+        if targetHead then
+            if index == "Hit" then
+                return targetHead.CFrame
+            elseif index == "Target" then
+                return targetHead
+            end
+        end
+    end
+    return oldIndex(self, index)
+end)
+
+if setreadonly then setreadonly(rawMetatable, true) end
